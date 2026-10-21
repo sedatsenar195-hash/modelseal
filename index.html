@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ModelSeal: permanent fingerprints for open AI models</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap"
+    />
+    <link rel="stylesheet" href="ui.css" />
+    <style>
+      /* ModelSeal app pieces, built from the page's design tokens. */
+      .x-app [hidden], .x-banner[hidden] { display: none !important; }
+      .x-mono { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--size-meta); overflow-wrap: anywhere; word-break: break-all; }
+
+      /* Warning banner for a failed self-test */
+      .x-banner { margin-top: 16px; padding: 14px 18px; border-radius: var(--r-m); border: 1.5px solid var(--fill-system-red); background: color-mix(in srgb, var(--fill-system-red) 10%, transparent); font: var(--type-label); }
+
+      /* Tabs: a segmented control */
+      .x-tabs { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: var(--r-pill); background: var(--fill-tertiary); max-width: 100%; }
+      .x-tab { appearance: none; border: 0; cursor: pointer; min-height: var(--tap); padding: 0 20px; border-radius: var(--r-pill); background: transparent; color: var(--text-secondary); font: var(--type-label); transition: background var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out); }
+      .x-tab:hover { color: var(--text-primary); }
+      .x-tab[aria-selected="true"] { background: var(--fill-primary); color: var(--text-primary-on); }
+      .x-tabs--sm .x-tab { padding: 0 14px; font: var(--type-tag); }
+      .x-panel { margin-top: 28px; display: grid; gap: 40px; }
+      .x-block { display: grid; gap: 16px; min-width: 0; }
+      .x-block > h3 { font: var(--type-heading); }
+      .x-block > h3 span { color: var(--text-secondary); }
+
+      /* Form fields */
+      .x-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 14px 16px; }
+      .x-field { display: grid; gap: 6px; min-width: 0; }
+      .x-field > span { font: var(--type-label); }
+      .x-field > span em { font-style: normal; font-weight: var(--weight-regular); color: var(--text-secondary); }
+      .x-input, .x-code { width: 100%; min-height: var(--tap); padding: 10px 14px; border-radius: var(--r-s); border: 1px solid var(--stroke-primary); background: var(--fill-primary-on); color: var(--text-primary); font: var(--type-body); font-size: var(--size-prose); }
+      .x-input::placeholder, .x-code::placeholder { color: var(--text-secondary); }
+      .x-input:focus, .x-code:focus { outline: 2px solid var(--fill-primary); outline-offset: 1px; }
+      .x-input[aria-invalid="true"] { border-color: var(--fill-system-red); }
+      .x-code { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--size-meta); line-height: 1.5; resize: vertical; min-height: 200px; white-space: pre; overflow: auto; }
+      .x-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+      .x-row > .x-field { flex: 1 1 220px; }
+      button.btn { cursor: pointer; }
+      button.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+      /* Drop zone */
+      .x-drop { display: grid; justify-items: center; gap: 8px; padding: 32px 20px; text-align: center; border: 1.5px dashed var(--stroke-primary); border-radius: var(--r-m); transition: background var(--dur-quick) var(--ease-out), border-color var(--dur-quick) var(--ease-out); }
+      .x-drop.is-over { background: var(--fill-tertiary); border-color: var(--text-primary); }
+      .x-drop__title { font: var(--type-body-strong); }
+      .x-drop label.btn { margin-top: 6px; cursor: pointer; }
+      .x-vh { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip: rect(0 0 0 0); }
+      .x-vh:focus-visible + label { outline: 2px solid var(--fill-primary); outline-offset: 3px; }
+
+      /* File rows with progress */
+      .x-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+      .x-files:empty { display: none; }
+      .x-file { display: grid; gap: 8px; padding: 16px 18px; border-radius: var(--r-m); background: var(--fill-tertiary); min-width: 0; }
+      .x-file__top { display: flex; gap: 10px; align-items: center; justify-content: space-between; min-width: 0; }
+      .x-file__name { font: var(--type-body-strong); overflow-wrap: anywhere; min-width: 0; }
+      .x-file__meta { font: var(--type-small); color: var(--text-secondary); }
+      .x-bar { height: 6px; border-radius: var(--r-pill); background: var(--stroke-primary); overflow: hidden; }
+      .x-bar > i { display: block; height: 100%; width: 0; background: var(--fill-primary); transition: width var(--dur-quick) linear; }
+      .x-file__hash { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .x-file__hash .x-mono { flex: 1 1 260px; }
+      .x-err { color: var(--fill-system-red); font: var(--type-label); }
+
+      /* Status and messages */
+      .x-status { font: var(--type-small); color: var(--text-secondary); }
+      .x-msg { font: var(--type-label); }
+      .x-msg:empty { display: none; }
+      .x-msg.is-error { color: var(--fill-system-red); }
+
+      /* Search results */
+      .x-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+      .x-pick { appearance: none; cursor: pointer; width: 100%; text-align: left; display: grid; gap: 4px; min-height: var(--tap); padding: 12px 16px; border-radius: var(--r-s); border: 1px solid var(--stroke-primary); background: var(--fill-primary-on); color: var(--text-primary); font: var(--type-body); }
+      .x-pick:hover { box-shadow: inset 0 0 0 100px var(--hover-wash); }
+      .x-pick b { font-weight: var(--weight-medium); }
+      .x-pick small { color: var(--text-secondary); }
+
+      /* Manifest summary */
+      .x-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0; margin: 0; border-top: 1px solid var(--stroke-secondary); }
+      .x-meta dt, .x-meta dd { margin: 0; padding: 10px 0; border-bottom: 1px solid var(--stroke-secondary); }
+      .x-meta dt { padding-right: 24px; font: var(--type-label); color: var(--text-secondary); }
+      .x-meta dd { overflow-wrap: anywhere; }
+
+      /* Verification results */
+      .x-results { display: grid; gap: 12px; }
+      .x-result { display: grid; gap: 10px; padding: 20px 22px; border-radius: var(--r-m); border: 2px solid var(--stroke-primary); background: var(--fill-tertiary); min-width: 0; }
+      .x-result--match { border-color: var(--fill-system-green); background: color-mix(in srgb, var(--fill-system-green) 12%, var(--fill-primary-on)); }
+      .x-result--mismatch { border-color: var(--fill-system-red); background: color-mix(in srgb, var(--fill-system-red) 12%, var(--fill-primary-on)); }
+      .x-result__verdict { font: var(--type-heading); display: flex; gap: 10px; align-items: baseline; }
+      .x-result__verdict::before { content: ""; flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--text-secondary); transform: translateY(-1px); }
+      .x-result--match .x-result__verdict::before { background: var(--fill-system-green); }
+      .x-result--mismatch .x-result__verdict::before { background: var(--fill-system-red); }
+      .x-result__verdict b { font-weight: var(--weight-bold); }
+      .x-hashes { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
+      .x-hashes dt { font: var(--type-tag); color: var(--text-secondary); padding-top: 1px; }
+      .x-hashes dd { margin: 0; }
+      @media (max-width: 599px) {
+        .x-hashes, .x-meta { grid-template-columns: 1fr; }
+        .x-meta dt { border-bottom: 0; padding-bottom: 0; }
+        .x-tab { padding: 0 14px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page" id="top">
+      <header class="nav glass" data-auto></header>
+      <main class="main">
+        <section class="hero">
+          <div class="hero__copy">
+            <p class="hero__eyebrow">Permanent fingerprints for open AI models</p>
+            <h1>ModelSeal</h1>
+            <p class="hero__sub">Is that really the model you downloaded? Fingerprint AI model files in your browser, anchor the record permanently on Arweave, and let anyone verify a download before they run it.</p>
+            <p class="hero__meta">Nothing is uploaded. Files are hashed locally on your device.</p>
+          </div>
+        </section>
+
+        <div class="x-banner" id="selftest-banner" role="alert" hidden>
+          Warning: the SHA-256 self-test failed in this browser, so fingerprints may be wrong. Try another browser before sealing or verifying.
+        </div>
+
+        <section class="section x-app" id="app" data-nav="App">
+          <div class="head">
+            <h2>Seal a model, or verify a download.</h2>
+            <p class="head__sub" id="engine-status">Loading the hashing engine…</p>
+          </div>
+
+          <div class="x-tabs" role="tablist" aria-label="ModelSeal">
+            <button class="x-tab" role="tab" id="tab-seal" aria-controls="panel-seal" aria-selected="true">Seal a model</button>
+            <button class="x-tab" role="tab" id="tab-verify" aria-controls="panel-verify" aria-selected="false" tabindex="-1">Verify a file</button>
+          </div>
+
+          <!-- ============ TAB 1: SEAL ============ -->
+          <div class="x-panel" id="panel-seal" role="tabpanel" aria-labelledby="tab-seal">
+            <div class="x-block">
+              <h3>1. Describe the model</h3>
+              <div class="x-form">
+                <label class="x-field"><span>Model name <em>required</em></span><input class="x-input" id="s-name" autocomplete="off" placeholder="e.g. TinyLlama-1.1B" /></label>
+                <label class="x-field"><span>Version <em>required</em></span><input class="x-input" id="s-version" autocomplete="off" placeholder="e.g. v1.0" /></label>
+                <label class="x-field"><span>Licence <em>optional</em></span><input class="x-input" id="s-licence" autocomplete="off" placeholder="e.g. Apache-2.0" /></label>
+                <label class="x-field"><span>Author / publisher <em>optional</em></span><input class="x-input" id="s-author" autocomplete="off" placeholder="e.g. Jane Doe Labs" /></label>
+                <label class="x-field"><span>Source URL <em>optional</em></span><input class="x-input" id="s-source" type="url" inputmode="url" autocomplete="off" placeholder="https://huggingface.co/…" /></label>
+              </div>
+            </div>
+
+            <div class="x-block">
+              <h3>2. Add the model files</h3>
+              <div class="x-drop" id="seal-drop">
+                <p class="x-drop__title">Drop model files here</p>
+                <p class="fineprint">Any type, several at once: .safetensors, .gguf, .bin, config.json. Multi-GB files are read in 8 MB chunks.</p>
+                <input type="file" id="seal-input" class="x-vh" multiple />
+                <label for="seal-input" class="btn">Choose files</label>
+              </div>
+              <ul class="x-files" id="seal-files" aria-live="polite"></ul>
+            </div>
+
+            <div class="x-block">
+              <h3>3. Your manifest</h3>
+              <p class="x-status" id="seal-status" role="status">Add at least one file, then enter a model name and version.</p>
+              <div id="manifest-box" class="x-block" hidden>
+                <label class="x-field"><span>manifest.json</span>
+                  <textarea id="manifest-out" class="x-code" readonly rows="14" spellcheck="false"></textarea>
+                </label>
+                <div class="links">
+                  <button class="btn" type="button" id="dl-manifest">Download manifest.json</button>
+                  <button class="btn" type="button" id="copy-manifest">Copy JSON</button>
+                </div>
+                <p class="fineprint" id="dl-note">If the download is blocked in this frame, use Copy JSON and save it as a file named manifest.json.</p>
+              </div>
+            </div>
+
+            <div class="x-block" id="publish-block" hidden>
+              <h3>4. Publish to Arweave</h3>
+              <div class="steps">
+                <article class="step">
+                  <div class="step__intro"><p class="step__num">01</p><p class="step__eyebrow">Sign in</p></div>
+                  <div>
+                    <h3>Open ArDrive and sign in</h3>
+                    <p>Uploads under 100 KB are free, so no tokens are needed. A manifest is a few KB.</p>
+                  </div>
+                  <dl class="step__panel"><dd><a class="btn" href="https://app.ardrive.io" target="_blank" rel="noopener">Open ArDrive</a></dd></dl>
+                </article>
+                <article class="step">
+                  <div class="step__intro"><p class="step__num">02</p><p class="step__eyebrow">Upload</p></div>
+                  <div>
+                    <h3>Upload manifest.json to a public drive</h3>
+                    <p>Public files can be fetched by anyone through arweave.net, which verification needs.</p>
+                  </div>
+                </article>
+                <article class="step">
+                  <div class="step__intro"><p class="step__num">03</p><p class="step__eyebrow">Tag</p></div>
+                  <div>
+                    <h3>Set these custom tags, if offered</h3>
+                    <ul class="step__pills">
+                      <li><b>App-Name</b> = ModelSeal</li>
+                      <li><b>Model-Name</b> = <span class="js-name"></span></li>
+                      <li><b>Model-Version</b> = <span class="js-version"></span></li>
+                    </ul>
+                    <p>Tags let people find your seal with “Search by model name”.</p>
+                  </div>
+                </article>
+                <article class="step">
+                  <div class="step__intro"><p class="step__num">04</p><p class="step__eyebrow">Share</p></div>
+                  <div>
+                    <h3>Share the Data Transaction ID</h3>
+                    <p>Copy the file’s Data Transaction ID and list it with <b class="js-name"></b> <b class="js-version"></b> in your README, model card or website.</p>
+                  </div>
+                </article>
+              </div>
+
+              <div class="aside" id="wander-box" hidden>
+                <h3>Wander wallet detected</h3>
+                <p class="fineprint">Publish the manifest straight from your wallet, with the tags above set for you. Arweave charges a small fee in AR.</p>
+                <div class="links" style="margin-top:12px"><button class="btn" type="button" id="wander-btn">Publish with Wander wallet</button></div>
+                <p class="x-msg" id="wander-msg" role="status" style="margin-top:10px"></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ TAB 2: VERIFY ============ -->
+          <div class="x-panel" id="panel-verify" role="tabpanel" aria-labelledby="tab-verify" hidden>
+            <div class="x-block" id="v-load">
+              <h3>1. Load the sealed manifest</h3>
+              <div class="x-tabs x-tabs--sm" role="tablist" aria-label="How to find the manifest">
+                <button class="x-tab" role="tab" data-mode="id" aria-selected="true">By transaction ID</button>
+                <button class="x-tab" role="tab" data-mode="search" aria-selected="false" tabindex="-1">Search by model name</button>
+                <button class="x-tab" role="tab" data-mode="paste" aria-selected="false" tabindex="-1">Paste manifest JSON</button>
+              </div>
+
+              <div class="x-block" data-mode-panel="id">
+                <div class="x-row">
+                  <label class="x-field"><span>Arweave transaction ID</span><input class="x-input x-mono" id="v-txid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="43 characters, e.g. bNbA3TEQVL60xlgCcqdz4ZPHFZ711cZ3hmkpGttDt_U" /></label>
+                  <button class="btn" type="button" id="v-load-id">Load manifest</button>
+                </div>
+              </div>
+
+              <div class="x-block" data-mode-panel="search" hidden>
+                <div class="x-row">
+                  <label class="x-field"><span>Model name</span><input class="x-input" id="v-sname" autocomplete="off" placeholder="Exact name, case-sensitive" /></label>
+                  <label class="x-field"><span>Version <em>optional</em></span><input class="x-input" id="v-sversion" autocomplete="off" placeholder="e.g. v1.0" /></label>
+                  <button class="btn" type="button" id="v-search">Search Arweave</button>
+                </div>
+                <ul class="x-list" id="v-search-results"></ul>
+              </div>
+
+              <div class="x-block" data-mode-panel="paste" hidden>
+                <label class="x-field"><span>Manifest JSON</span>
+                  <textarea class="x-code" id="v-paste" rows="10" spellcheck="false" placeholder='{ "app": "ModelSeal", "schema": "modelseal/1", … }'></textarea>
+                </label>
+                <div class="links"><button class="btn" type="button" id="v-load-paste">Load pasted manifest</button></div>
+              </div>
+
+              <p class="x-msg" id="v-msg" role="status" aria-live="polite"></p>
+            </div>
+
+            <div class="x-block" id="v-manifest" hidden>
+              <h3>The sealed record</h3>
+              <dl class="x-meta" id="v-meta"></dl>
+              <ul class="x-files" id="v-manifest-files"></ul>
+              <div class="links"><button class="btn" type="button" id="v-reset">Load a different manifest</button></div>
+            </div>
+
+            <div class="x-block" id="v-check" hidden>
+              <h3>2. Check your downloaded files</h3>
+              <div class="x-drop" id="verify-drop">
+                <p class="x-drop__title">Drop the files you downloaded</p>
+                <p class="fineprint">They are hashed on this device and compared with the sealed fingerprints.</p>
+                <input type="file" id="verify-input" class="x-vh" multiple />
+                <label for="verify-input" class="btn">Choose files</label>
+              </div>
+              <div class="x-results" id="v-results" aria-live="polite"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="how" data-nav="How it works">
+          <div class="head">
+            <h2>How it works</h2>
+            <p class="head__sub">Three steps, one permanent record.</p>
+          </div>
+          <div class="steps">
+            <article class="step">
+              <div class="step__intro"><p class="step__num">01</p><p class="step__eyebrow">Author</p></div>
+              <div>
+                <h3>Seal</h3>
+                <p>The author hashes each model file locally (SHA-256) and publishes a small manifest to Arweave, where it’s permanent and can’t be edited or deleted.</p>
+              </div>
+            </article>
+            <article class="step">
+              <div class="step__intro"><p class="step__num">02</p><p class="step__eyebrow">Author</p></div>
+              <div>
+                <h3>Share</h3>
+                <p>The author lists the manifest’s transaction ID with the model.</p>
+              </div>
+            </article>
+            <article class="step">
+              <div class="step__intro"><p class="step__num">03</p><p class="step__eyebrow">Anyone</p></div>
+              <div>
+                <h3>Verify</h3>
+                <p>Anyone hashes their download locally and compares it to the permanent record: Match, Mismatch or Unknown.</p>
+              </div>
+            </article>
+          </div>
+          <div class="aside">
+            <h3>Limitations</h3>
+            <p class="fineprint">A fingerprint proves a file hasn’t changed since it was sealed. It doesn’t prove the original model was safe, or that the sealer is the real author. Author wallet signatures are on the roadmap.</p>
+          </div>
+        </section>
+      </main>
+      <footer class="foot">
+        <p>Built by Lawal Ridwan for the HackerNoon Decentralize AI Hackathon. Open source.</p>
+        <nav aria-label="Back to sections" data-auto></nav>
+      </footer>
+    </div>
+    <script src="ui.js"></script>
+    <script>
+      /* ModelSeal: vanilla JS, no build step. Everything runs in the browser. */
+      (function () {
+        "use strict";
+
+        /* ---------- Constants ---------- */
+        var CHUNK = 8 * 1024 * 1024; // 8 MB read size for streaming hashes
+        var FALLBACK_MAX = 500 * 1024 * 1024; // Web Crypto fallback reads the whole file, so cap it
+        var HASH_WASM_URL = "https://cdn.jsdelivr.net/npm/hash-wasm@4/dist/index.esm.min.js";
+        var ARWEAVE_JS_URL = "https://unpkg.com/arweave/bundles/web.bundle.min.js";
+        var GATEWAY = "https://arweave.net/";
+        var ABC_SHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        var TXID_RE = /^[A-Za-z0-9_-]{43}$/;
+        var HEX64_RE = /^[0-9a-f]{64}$/i;
+
+        var $ = function (id) { return document.getElementById(id); };
+
+        /* ---------- Small helpers ---------- */
+        function esc(s) {
+          return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+          });
+        }
+        function fmtBytes(n) {
+          if (n < 1024) return n + " B";
+          var u = ["KB", "MB", "GB", "TB"], i = -1;
+          do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+          return n.toFixed(n < 10 ? 2 : 1) + " " + u[i];
+        }
+        function mb(n) { return (n / 1048576).toFixed(1) + " MB"; }
+        function toHex(buf) {
+          var b = new Uint8Array(buf), s = "";
+          for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? "0" : "") + b[i].toString(16);
+          return s;
+        }
+        // Blob.arrayBuffer() is missing on older iOS Safari, so fall back to FileReader.
+        function readBuf(blob) {
+          if (blob.arrayBuffer) return blob.arrayBuffer();
+          return new Promise(function (res, rej) {
+            var r = new FileReader();
+            r.onload = function () { res(r.result); };
+            r.onerror = function () { rej(r.error || new Error("Could not read the file.")); };
+            r.readAsArrayBuffer(blob);
+          });
+        }
+        function setMsg(el, text, isError) {
+          el.textContent = text || "";
+          el.classList.toggle("is-error", !!isError);
+        }
+
+        /* ---------- Hashing engine ---------- */
+        var engine = "loading"; // "hash-wasm" | "webcrypto"
+        var hashWasmPromise = null;
+
+        // Load hash-wasm once as an ES module at runtime; resolve to null if it fails.
+        function loadHashWasm() {
+          if (!hashWasmPromise) {
+            hashWasmPromise = import(HASH_WASM_URL)
+              .then(function (mod) {
+                if (!mod || typeof mod.createSHA256 !== "function") throw new Error("createSHA256 not found");
+                engine = "hash-wasm";
+                return mod;
+              })
+              .catch(function (err) {
+                console.warn("[ModelSeal] hash-wasm failed to load, using Web Crypto fallback:", err);
+                engine = "webcrypto";
+                return null;
+              });
+          }
+          return hashWasmPromise;
+        }
+
+        /**
+         * SHA-256 of a Blob/File as lowercase hex.
+         * Streams 8 MB slices into hash-wasm; falls back to crypto.subtle for files up to 500 MB.
+         * onProgress(doneBytes, totalBytes); isCancelled() lets a caller stop a running hash.
+         */
+        function hashBlob(blob, onProgress, isCancelled) {
+          onProgress = onProgress || function () {};
+          isCancelled = isCancelled || function () { return false; };
+          var total = blob.size;
+          return loadHashWasm().then(function (mod) {
+            if (mod) {
+              return mod.createSHA256().then(function (hasher) {
+                hasher.init();
+                var offset = 0;
+                onProgress(0, total);
+                function next() {
+                  if (isCancelled()) throw new Error("cancelled");
+                  if (offset >= total) return hasher.digest("hex");
+                  var end = Math.min(offset + CHUNK, total);
+                  return readBuf(blob.slice(offset, end)).then(function (buf) {
+                    hasher.update(new Uint8Array(buf));
+                    offset = end;
+                    onProgress(offset, total);
+                    return next();
+                  });
+                }
+                return next();
+              });
+            }
+            // Fallback: Web Crypto, whole file in memory.
+            if (!(window.crypto && crypto.subtle)) {
+              throw new Error("No hashing engine is available in this browser. Check your connection and reload.");
+            }
+            if (total > FALLBACK_MAX) {
+              throw new Error("The streaming hasher couldn’t load, and this file (" + fmtBytes(total) + ") is over the 500 MB fallback limit. Check your connection and reload the page.");
+            }
+            onProgress(0, total);
+            return readBuf(blob)
+              .then(function (buf) { return crypto.subtle.digest("SHA-256", buf); })
+              .then(function (d) { onProgress(total, total); return toHex(d); });
+          });
+        }
+
+        /* ---------- Self-test: SHA-256("abc") ---------- */
+        function selfTest() {
+          var abc = new Blob(["abc"]);
+          return hashBlob(abc)
+            .then(function (h) { return h; }, function (e) { return "error: " + e.message; })
+            .then(function (got) {
+              var pass = got === ABC_SHA256;
+              console.log("[ModelSeal] SHA-256 self-test (" + engine + "): " + (pass ? "PASS" : "FAIL") + " got " + got);
+              if (!pass) $("selftest-banner").hidden = false;
+              $("engine-status").textContent =
+                engine === "hash-wasm"
+                  ? "Hashing engine ready: streaming SHA-256, any file size." + (pass ? " Self-test passed." : "")
+                  : "Streaming hasher unavailable; using Web Crypto, files up to 500 MB." + (pass ? " Self-test passed." : "");
+              // Cross-check with Web Crypto when both engines exist.
+              if (engine === "hash-wasm" && window.crypto && crypto.subtle) {
+                crypto.subtle.digest("SHA-256", new TextEncoder().encode("abc")).then(function (d) {
+                  var ok = toHex(d) === ABC_SHA256;
+                  console.log("[ModelSeal] Web Crypto cross-check: " + (ok ? "PASS" : "FAIL"));
+                }, function () {});
+              }
+            });
+        }
+
+        /* ---------- Clipboard and download ---------- */
+        function flash(btn, text) {
+          if (!btn) return;
+          var orig = btn.getAttribute("data-label") || btn.textContent;
+          btn.setAttribute("data-label", orig);
+          btn.textContent = text;
+          clearTimeout(btn._t);
+          btn._t = setTimeout(function () { btn.textContent = orig; }, 1800);
+        }
+        // Select text in a textarea (also on iOS) and try execCommand("copy").
+        function execCopy(ta) {
+          ta.focus();
+          ta.select();
+          try { ta.setSelectionRange(0, ta.value.length); } catch (e) {}
+          try { return document.execCommand("copy"); } catch (e) { return false; }
+        }
+        // Copy text: Clipboard API first, then execCommand on a textarea; leave it selected if both fail.
+        function copyText(text, btn, visibleTa) {
+          var p = navigator.clipboard && navigator.clipboard.writeText
+            ? navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; })
+            : Promise.resolve(false);
+          p.then(function (ok) {
+            if (!ok) {
+              if (visibleTa) ok = execCopy(visibleTa);
+              else {
+                var t = document.createElement("textarea");
+                t.value = text;
+                t.setAttribute("readonly", "");
+                t.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0";
+                document.body.appendChild(t);
+                ok = execCopy(t);
+                document.body.removeChild(t);
+              }
+            }
+            flash(btn, ok ? "Copied" : visibleTa ? "Selected: copy manually" : "Copy blocked");
+          });
+        }
+        function downloadText(text, filename) {
+          var blob = new Blob([text], { type: "application/json" });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+        }
+
+        /* ---------- Drop zones ---------- */
+        // Stop the browser opening a file dropped outside a zone.
+        ["dragover", "drop"].forEach(function (ev) {
+          window.addEventListener(ev, function (e) { e.preventDefault(); });
+        });
+        function setupDrop(zone, input, onFiles) {
+          var depth = 0;
+          zone.addEventListener("dragenter", function (e) { e.preventDefault(); depth++; zone.classList.add("is-over"); });
+          zone.addEventListener("dragover", function (e) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; });
+          zone.addEventListener("dragleave", function () { if (--depth <= 0) { depth = 0; zone.classList.remove("is-over"); } });
+          zone.addEventListener("drop", function (e) {
+            e.preventDefault();
+            depth = 0;
+            zone.classList.remove("is-over");
+            var files = e.dataTransfer && e.dataTransfer.files;
+            if (files && files.length) onFiles(Array.prototype.slice.call(files));
+          });
+          input.addEventListener("change", function () {
+            if (input.files && input.files.length) onFiles(Array.prototype.slice.call(input.files));
+            input.value = ""; // allow picking the same file again
+          });
+        }
+
+        /* ---------- File row UI (shared by both tabs) ---------- */
+        function makeFileRow(file, opts) {
+          var li = document.createElement((opts && opts.tag) || "li");
+          li.className = "x-file";
+          li.innerHTML =
+            '<div class="x-file__top"><span class="x-file__name">' + esc(file.name) + "</span>" +
+            (opts && opts.onRemove ? '<button class="btn" type="button" data-remove>Remove</button>' : "") +
+            "</div>" +
+            '<p class="x-file__meta" data-meta>' + fmtBytes(file.size) + " · waiting</p>" +
+            '<div class="x-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Hashing ' + esc(file.name) + '"><i></i></div>' +
+            '<div class="x-file__hash" data-hash hidden></div>';
+          var meta = li.querySelector("[data-meta]");
+          var bar = li.querySelector(".x-bar");
+          var fill = bar.querySelector("i");
+          var hashBox = li.querySelector("[data-hash]");
+          if (opts && opts.onRemove) li.querySelector("[data-remove]").addEventListener("click", opts.onRemove);
+          return {
+            el: li,
+            progress: function (done, total) {
+              var pct = total ? Math.floor((done / total) * 100) : 100;
+              fill.style.width = pct + "%";
+              bar.setAttribute("aria-valuenow", pct);
+              meta.textContent = fmtBytes(file.size) + " · hashing " + pct + "% · " + mb(done) + " of " + mb(total);
+            },
+            done: function (hex) {
+              fill.style.width = "100%";
+              bar.hidden = true;
+              meta.textContent = fmtBytes(file.size) + " · SHA-256";
+              hashBox.hidden = false;
+              hashBox.innerHTML = '<code class="x-mono">' + hex + '</code><button class="btn" type="button">Copy hash</button>';
+              var b = hashBox.querySelector("button");
+              b.addEventListener("click", function () { copyText(hex, b); });
+            },
+            error: function (msg) {
+              bar.hidden = true;
+              meta.innerHTML = '<span class="x-err">' + esc(msg) + "</span>";
+            }
+          };
+        }
+
+        /* ---------- Tabs ---------- */
+        function setupTabs(tabs, onSelect) {
+          tabs.forEach(function (tab, i) {
+            tab.addEventListener("click", function () { select(i); });
+            tab.addEventListener("keydown", function (e) {
+              if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+                e.preventDefault();
+                var n = (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+                select(n);
+                tabs[n].focus();
+              }
+            });
+          });
+          function select(i) {
+            tabs.forEach(function (t, j) {
+              t.setAttribute("aria-selected", j === i ? "true" : "false");
+              t.tabIndex = j === i ? 0 : -1;
+            });
+            onSelect(i);
+          }
+        }
+        setupTabs([$("tab-seal"), $("tab-verify")], function (i) {
+          $("panel-seal").hidden = i !== 0;
+          $("panel-verify").hidden = i !== 1;
+        });
+
+        /* =====================================================
+           TAB 1: SEAL A MODEL
+           ===================================================== */
+        var sealEntries = []; // { file, row, status: queued|hashing|done|error, sha256, removed }
+        var sealRunning = false;
+        var currentManifestText = "";
+        var currentManifest = null;
+        var fields = ["s-name", "s-version", "s-licence", "s-author", "s-source"].map($);
+
+        function addSealFiles(files) {
+          files.forEach(function (file) {
+            var entry = { file: file, status: "queued", sha256: null, removed: false };
+            entry.row = makeFileRow(file, {
+              onRemove: function () {
+                entry.removed = true;
+                sealEntries = sealEntries.filter(function (e) { return e !== entry; });
+                entry.row.el.remove();
+                updateManifest();
+              }
+            });
+            sealEntries.push(entry);
+            $("seal-files").appendChild(entry.row.el);
+          });
+          updateManifest();
+          runSealQueue();
+        }
+
+        // Hash queued files one at a time to keep memory flat.
+        function runSealQueue() {
+          if (sealRunning) return;
+          var entry = sealEntries.find(function (e) { return e.status === "queued"; });
+          if (!entry) return;
+          sealRunning = true;
+          entry.status = "hashing";
+          updateManifest();
+          hashBlob(entry.file, entry.row.progress, function () { return entry.removed; })
+            .then(function (hex) {
+              entry.status = "done";
+              entry.sha256 = hex;
+              entry.row.done(hex);
+            }, function (err) {
+              if (entry.removed) return;
+              entry.status = "error";
+              entry.row.error(err.message || "Could not hash this file.");
+            })
+            .then(function () {
+              sealRunning = false;
+              updateManifest();
+              runSealQueue();
+            });
+        }
+
+        function val(el) { return el.value.trim(); }
+
+        // Build (or explain why we can't yet build) the manifest.
+        function updateManifest() {
+          var status = $("seal-status");
+          var name = val(fields[0]), version = val(fields[1]);
+          var pending = sealEntries.filter(function (e) { return e.status === "queued" || e.status === "hashing"; }).length;
+          var failed = sealEntries.filter(function (e) { return e.status === "error"; }).length;
+          var ready = false;
+
+          if (!sealEntries.length) status.textContent = "Add at least one file, then enter a model name and version.";
+          else if (pending) status.textContent = "Hashing " + pending + " file" + (pending > 1 ? "s" : "") + "… The manifest is built when every file is done.";
+          else if (failed) status.textContent = failed + " file" + (failed > 1 ? "s" : "") + " could not be hashed. Remove " + (failed > 1 ? "them" : "it") + " to build the manifest.";
+          else if (!name || !version) status.textContent = "All files hashed. Enter a model name and version to build the manifest.";
+          else ready = true;
+
+          fields[0].setAttribute("aria-invalid", sealEntries.length && !pending && !name ? "true" : "false");
+          fields[1].setAttribute("aria-invalid", sealEntries.length && !pending && !version ? "true" : "false");
+
+          $("manifest-box").hidden = !ready;
+          $("publish-block").hidden = !ready;
+          if (!ready) { currentManifest = null; currentManifestText = ""; return; }
+
+          currentManifest = {
+            app: "ModelSeal",
+            schema: "modelseal/1",
+            model: name,
+            version: version,
+            licence: val(fields[2]) || null,
+            author: val(fields[3]) || null,
+            source: val(fields[4]) || null,
+            sealedAt: new Date().toISOString(),
+            files: sealEntries.map(function (e) {
+              return { name: e.file.name, size: e.file.size, sha256: e.sha256 };
+            })
+          };
+          currentManifestText = JSON.stringify(currentManifest, null, 2);
+          $("manifest-out").value = currentManifestText;
+          status.textContent = "Manifest ready: " + sealEntries.length + " file" + (sealEntries.length > 1 ? "s" : "") + " sealed as " + name + " " + version + ".";
+          // Fill the real name and version into the publishing steps.
+          document.querySelectorAll(".js-name").forEach(function (el) { el.textContent = name; });
+          document.querySelectorAll(".js-version").forEach(function (el) { el.textContent = version; });
+          $("wander-msg").textContent = "";
+        }
+
+        fields.forEach(function (el) { el.addEventListener("input", updateManifest); });
+        setupDrop($("seal-drop"), $("seal-input"), addSealFiles);
+
+        $("dl-manifest").addEventListener("click", function () {
+          if (!currentManifestText) return;
+          try {
+            downloadText(currentManifestText, "manifest.json");
+            flash($("dl-manifest"), "Download started");
+          } catch (e) {
+            $("dl-note").textContent = "Download was blocked here. Use Copy JSON and save the text as manifest.json.";
+          }
+        });
+        $("copy-manifest").addEventListener("click", function () {
+          if (currentManifestText) copyText(currentManifestText, $("copy-manifest"), $("manifest-out"));
+        });
+
+        /* ---------- Wander wallet (optional) ---------- */
+        function checkWallet() {
+          $("wander-box").hidden = !window.arweaveWallet;
+        }
+        checkWallet();
+        window.addEventListener("arweaveWalletLoaded", checkWallet);
+        // Extensions can inject late; poll briefly.
+        var walletPolls = 0;
+        var walletTimer = setInterval(function () {
+          checkWallet();
+          if (window.arweaveWallet || ++walletPolls > 10) clearInterval(walletTimer);
+        }, 500);
+
+        var arweaveLib = null;
+        function loadArweave() {
+          if (window.Arweave) return Promise.resolve(window.Arweave);
+          if (arweaveLib) return arweaveLib;
+          arweaveLib = new Promise(function (res, rej) {
+            var s = document.createElement("script");
+            s.src = ARWEAVE_JS_URL;
+            s.onload = function () { window.Arweave ? res(window.Arweave) : rej(new Error("arweave-js loaded but Arweave is missing")); };
+            s.onerror = function () { arweaveLib = null; rej(new Error("Could not load arweave-js")); };
+            document.head.appendChild(s);
+          });
+          return arweaveLib;
+        }
+
+        $("wander-btn").addEventListener("click", async function () {
+          var msg = $("wander-msg"), btn = $("wander-btn");
+          if (!currentManifest || !window.arweaveWallet) return;
+          btn.disabled = true;
+          setMsg(msg, "Connecting to Wander…");
+          try {
+            await window.arweaveWallet.connect(["DISPATCH"]);
+            setMsg(msg, "Preparing the transaction…");
+            var Arweave = await loadArweave();
+            var arweave = Arweave.init({ host: "arweave.net", port: 443, protocol: "https" });
+            var tx = await arweave.createTransaction({ data: currentManifestText });
+            tx.addTag("Content-Type", "application/json");
+            tx.addTag("App-Name", "ModelSeal");
+            tx.addTag("Model-Name", currentManifest.model);
+            tx.addTag("Model-Version", currentManifest.version);
+            setMsg(msg, "Approve the upload in your wallet…");
+            var res = await window.arweaveWallet.dispatch(tx);
+            var id = res && res.id;
+            if (!id) throw new Error("The wallet did not return a transaction ID.");
+            msg.classList.remove("is-error");
+            msg.innerHTML = 'Published. Transaction ID: <code class="x-mono">' + esc(id) + '</code><br /><a class="link" href="' + GATEWAY + esc(id) + '" target="_blank" rel="noopener">' + GATEWAY + esc(id) + "</a> (may take a few minutes to appear).";
+          } catch (err) {
+            console.error("[ModelSeal] Wander publish failed:", err);
+            var text = String((err && err.message) || err || "");
+            var friendly = /cancel|denied|reject|User/i.test(text)
+              ? "The wallet request was cancelled. Nothing was published."
+              : /arweave-js/i.test(text)
+              ? "Couldn’t load the Arweave library. Check your connection, or publish with ArDrive instead."
+              : "Publishing failed: " + (text || "unknown error") + ". You can still publish with ArDrive.";
+            setMsg(msg, friendly, true);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+
+        /* =====================================================
+           TAB 2: VERIFY A FILE
+           ===================================================== */
+        var vManifest = null;
+        var vMsg = $("v-msg");
+        var modeTabs = Array.prototype.slice.call(document.querySelectorAll("[data-mode]"));
+        var modePanels = Array.prototype.slice.call(document.querySelectorAll("[data-mode-panel]"));
+        setupTabs(modeTabs, function (i) {
+          var mode = modeTabs[i].getAttribute("data-mode");
+          modePanels.forEach(function (p) { p.hidden = p.getAttribute("data-mode-panel") !== mode; });
+          setMsg(vMsg, "");
+        });
+
+        // Check the shape of a manifest; throw a friendly error if it isn't ModelSeal.
+        function validateManifest(obj) {
+          if (!obj || typeof obj !== "object" || Array.isArray(obj)) throw new Error("This JSON isn’t a ModelSeal manifest.");
+          if (obj.app !== "ModelSeal") throw new Error("This JSON isn’t a ModelSeal manifest (it has no \"app\": \"ModelSeal\").");
+          if (!Array.isArray(obj.files) || !obj.files.length) throw new Error("This manifest lists no files.");
+          obj.files.forEach(function (f, i) {
+            if (!f || typeof f.name !== "string" || !HEX64_RE.test(String(f.sha256 || ""))) {
+              throw new Error("File " + (i + 1) + " in this manifest has no valid name or SHA-256 fingerprint.");
+            }
+          });
+          return obj;
+        }
+
+        // Fetch a manifest from arweave.net by transaction ID.
+        function fetchManifest(id) {
+          return fetch(GATEWAY + encodeURIComponent(id))
+            .catch(function () { throw new Error("Couldn’t reach arweave.net. Check your connection and try again."); })
+            .then(function (r) {
+              if (r.status === 404) throw new Error("No data found for that transaction ID. New uploads can take a few minutes to appear; check the ID and try again soon.");
+              if (r.status === 400) throw new Error("Arweave rejected that ID. Check it was copied in full.");
+              if (!r.ok) throw new Error("arweave.net answered with error " + r.status + ". Try again in a moment.");
+              return r.text();
+            })
+            .then(function (text) {
+              var obj;
+              try { obj = JSON.parse(text); } catch (e) { throw new Error("That transaction isn’t JSON, so it isn’t a ModelSeal manifest."); }
+              return validateManifest(obj);
+            });
+        }
+
+        function showManifest(m, sourceLabel) {
+          vManifest = m;
+          var rows = [
+            ["Model", m.model], ["Version", m.version], ["Author", m.author || "Not given"],
+            ["Licence", m.licence || "Not given"], ["Sealed at", m.sealedAt || "Not given"]
+          ];
+          var html = rows.map(function (r) { return "<dt>" + r[0] + "</dt><dd>" + esc(r[1]) + "</dd>"; }).join("");
+          if (m.source) {
+            var safe = /^https?:\/\//i.test(m.source);
+            html += "<dt>Source</dt><dd>" + (safe ? '<a class="link" href="' + esc(m.source) + '" target="_blank" rel="noopener">' + esc(m.source) + "</a>" : esc(m.source)) + "</dd>";
+          }
+          html += "<dt>Record</dt><dd>" + sourceLabel + "</dd>";
+          $("v-meta").innerHTML = html;
+          $("v-manifest-files").innerHTML = m.files.map(function (f) {
+            return '<li class="x-file"><span class="x-file__name">' + esc(f.name) + "</span>" +
+              '<p class="x-file__meta">' + (typeof f.size === "number" ? fmtBytes(f.size) + " · " : "") + "sealed SHA-256</p>" +
+              '<code class="x-mono">' + esc(String(f.sha256).toLowerCase()) + "</code></li>";
+          }).join("");
+          $("v-results").innerHTML = "";
+          $("v-load").hidden = true;
+          $("v-manifest").hidden = false;
+          $("v-check").hidden = false;
+          setMsg(vMsg, "");
+        }
+
+        $("v-reset").addEventListener("click", function () {
+          vManifest = null;
+          $("v-load").hidden = false;
+          $("v-manifest").hidden = true;
+          $("v-check").hidden = true;
+          $("v-results").innerHTML = "";
+        });
+
+        // Mode A: by transaction ID
+        function loadById(id, btn) {
+          id = (id || "").trim().replace(/^https?:\/\/[^/]+\//i, ""); // accept a pasted arweave.net URL too
+          if (!TXID_RE.test(id)) {
+            setMsg(vMsg, "That doesn’t look like an Arweave transaction ID: it should be 43 letters, numbers, - or _.", true);
+            return;
+          }
+          if (btn) btn.disabled = true;
+          setMsg(vMsg, "Fetching the manifest from Arweave…");
+          fetchManifest(id).then(function (m) {
+            showManifest(m, '<a class="link x-mono" href="' + GATEWAY + esc(id) + '" target="_blank" rel="noopener">' + esc(id) + "</a>");
+          }, function (err) {
+            setMsg(vMsg, err.message, true);
+          }).then(function () { if (btn) btn.disabled = false; });
+        }
+        $("v-load-id").addEventListener("click", function () { loadById($("v-txid").value, $("v-load-id")); });
+        $("v-txid").addEventListener("keydown", function (e) { if (e.key === "Enter") loadById($("v-txid").value, $("v-load-id")); });
+
+        // Mode B: search by tags via GraphQL
+        function search() {
+          var name = val($("v-sname")), version = val($("v-sversion"));
+          var list = $("v-search-results"), btn = $("v-search");
+          list.innerHTML = "";
+          if (!name) { setMsg(vMsg, "Enter a model name to search.", true); return; }
+          var tags = [
+            { name: "App-Name", values: ["ModelSeal"] },
+            { name: "Model-Name", values: [name] }
+          ];
+          if (version) tags.push({ name: "Model-Version", values: [version] });
+          var query =
+            "query($tags: [TagFilter!]) { transactions(tags: $tags, first: 10, sort: HEIGHT_DESC) " +
+            "{ edges { node { id tags { name value } block { timestamp } } } } }";
+          btn.disabled = true;
+          setMsg(vMsg, "Searching Arweave…");
+          fetch(GATEWAY + "graphql", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: query, variables: { tags: tags } })
+          })
+            .catch(function () { throw new Error("Couldn’t reach arweave.net. Check your connection and try again."); })
+            .then(function (r) {
+              if (!r.ok) throw new Error("The Arweave search answered with error " + r.status + ". Try again in a moment.");
+              return r.json();
+            })
+            .then(function (json) {
+              if (json.errors && json.errors.length) throw new Error("The Arweave search failed: " + json.errors[0].message);
+              var edges = (json.data && json.data.transactions && json.data.transactions.edges) || [];
+              if (!edges.length) {
+                setMsg(vMsg, "No ModelSeal records found for “" + name + "”" + (version ? " " + version : "") + ". Names are case-sensitive, and new uploads can take a few minutes to be indexed.", true);
+                return;
+              }
+              setMsg(vMsg, edges.length + " record" + (edges.length > 1 ? "s" : "") + " found, newest first. Pick one to load it.");
+              edges.forEach(function (edge) {
+                var n = edge.node, ver = "";
+                (n.tags || []).forEach(function (t) { if (t.name === "Model-Version") ver = t.value; });
+                var when = n.block && n.block.timestamp
+                  ? new Date(n.block.timestamp * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+                  : "Pending confirmation";
+                var li = document.createElement("li");
+                li.innerHTML = '<button class="x-pick" type="button"><b>' + esc(name) + " " + esc(ver || "(no version tag)") + "</b><small>" + esc(when) + '</small><small class="x-mono">' + esc(n.id) + "</small></button>";
+                li.firstChild.addEventListener("click", function () { loadById(n.id, li.firstChild); });
+                list.appendChild(li);
+              });
+            })
+            .catch(function (err) { setMsg(vMsg, err.message, true); })
+            .then(function () { btn.disabled = false; });
+        }
+        $("v-search").addEventListener("click", search);
+        [$("v-sname"), $("v-sversion")].forEach(function (el) {
+          el.addEventListener("keydown", function (e) { if (e.key === "Enter") search(); });
+        });
+
+        // Mode C: paste manifest JSON
+        $("v-load-paste").addEventListener("click", function () {
+          var text = $("v-paste").value.trim();
+          if (!text) { setMsg(vMsg, "Paste a manifest first.", true); return; }
+          var obj;
+          try { obj = JSON.parse(text); } catch (e) { setMsg(vMsg, "That text isn’t valid JSON. Check it was copied in full.", true); return; }
+          try { showManifest(validateManifest(obj), "Pasted manifest (not checked against Arweave)"); }
+          catch (err) { setMsg(vMsg, err.message, true); }
+        });
+
+        /* ---------- Hash downloaded files and compare ---------- */
+        var vQueue = [], vRunning = false;
+        function addVerifyFiles(files) {
+          files.forEach(function (file) {
+            var card = document.createElement("div");
+            var row = makeFileRow(file, { tag: "div" });
+            card.appendChild(row.el);
+            $("v-results").appendChild(card);
+            vQueue.push({ file: file, row: row, card: card, manifest: vManifest });
+          });
+          runVerifyQueue();
+        }
+        function runVerifyQueue() {
+          if (vRunning || !vQueue.length) return;
+          vRunning = true;
+          var job = vQueue.shift();
+          hashBlob(job.file, job.row.progress, function () { return job.manifest !== vManifest; })
+            .then(function (hex) { if (job.manifest === vManifest) renderVerdict(job, hex); },
+                  function (err) { if (job.manifest === vManifest) job.row.error(err.message || "Could not hash this file."); })
+            .then(function () { vRunning = false; runVerifyQueue(); });
+        }
+
+        // MATCH if the hash equals any entry; MISMATCH if only the name matches; else UNKNOWN.
+        function renderVerdict(job, hex) {
+          var m = job.manifest, files = m.files;
+          var byHash = files.find(function (f) { return String(f.sha256).toLowerCase() === hex; });
+          var byName = files.find(function (f) { return f.name === job.file.name; });
+          var label = esc(m.model) + " " + esc(m.version);
+          var kind, verdict, sealed = null;
+          if (byHash) {
+            kind = "match"; sealed = byHash;
+            verdict = "<b>MATCH:</b> this file is identical to " + esc(byHash.name) + " in " + label + ".";
+          } else if (byName) {
+            kind = "mismatch"; sealed = byName;
+            verdict = "<b>MISMATCH:</b> a file named " + esc(job.file.name) + " exists in the manifest but its fingerprint is different. Do not trust this file.";
+          } else {
+            kind = "unknown";
+            verdict = "<b>UNKNOWN:</b> this file is not part of this sealed model.";
+          }
+          var card = job.card;
+          card.className = "x-result x-result--" + kind;
+          card.innerHTML =
+            '<p class="x-result__verdict">' + "<span>" + verdict + "</span></p>" +
+            '<p class="x-status">' + esc(job.file.name) + " · " + fmtBytes(job.file.size) + "</p>" +
+            '<dl class="x-hashes"><dt>Your file</dt><dd class="x-mono">' + hex + "</dd>" +
+            "<dt>Sealed</dt><dd class=\"x-mono\">" + (sealed ? esc(String(sealed.sha256).toLowerCase()) : "No entry with this name or fingerprint") + "</dd></dl>";
+        }
+        setupDrop($("verify-drop"), $("verify-input"), function (files) {
+          if (!vManifest) return;
+          addVerifyFiles(files);
+        });
+
+        /* ---------- Start ---------- */
+        selfTest();
+      })();
+    </script>
+  </body>
+</html>
